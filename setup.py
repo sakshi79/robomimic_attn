@@ -26,6 +26,7 @@ setup(
         "imageio",
         "imageio-ffmpeg",
         "egl_probe>=1.0.1",
+        "transformers==4.32.0",
         "torch",
         "torchvision",
     ],

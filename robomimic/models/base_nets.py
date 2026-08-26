@@ -1,3 +1,7 @@
+from .mask import SoftAttentionMask
+from .sam3 import Sam3Masker as sam3_mask
+from .siglip import SigLIPMasker
+
 """
 Contains torch Modules that correspond to basic network building blocks, like 
 MLP, RNN, and CNN backbones.
@@ -454,32 +458,92 @@ class ResNet18Conv(ConvBase):
         input_channel=3,
         pretrained=False,
         input_coord_conv=False,
+        use_sam3=False,          # ← new flag, default OFF
+        softmask=True,             # ← new flag, default OFF
+        use_siglip=False,           # ← new flag, default OFF
     ):
-        """
-        Args:
-            input_channel (int): number of input channels for input images to the network.
-                If not equal to 3, modifies first conv layer in ResNet to handle the number
-                of input channels.
-            pretrained (bool): if True, load pretrained weights for all ResNet layers.
-            input_coord_conv (bool): if True, use a coordinate convolution for the first layer
-                (a convolution where input channels are modified to encode spatial pixel location)
-        """
         super(ResNet18Conv, self).__init__()
-        net = vision_models.resnet18(pretrained=pretrained)
+        self.masker = None        # ← always None at init time
+        self._pretrained = pretrained
 
-        if input_coord_conv:
-            net.conv1 = CoordConv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        elif input_channel != 3:
-            net.conv1 = nn.Conv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        if softmask:
+            net1 = SoftAttentionMask()
+            net2 = vision_models.resnet18(pretrained=pretrained)
 
-        # cut the last fc layer
-        self._input_coord_conv = input_coord_conv
-        self._input_channel = input_channel
-        self.nets = torch.nn.Sequential(*(list(net.children())[:-2]))
+            if input_coord_conv:
+                net2.conv1 = CoordConv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            elif input_channel != 3:
+                net2.conv1 = nn.Conv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+            # cut the last fc layer
+            self._input_coord_conv = input_coord_conv
+            self._input_channel = input_channel
+            self.nets = torch.nn.Sequential(net1, *(list(net2.children())[:-2]))
+            self._has_mask_net = True
+        
+        elif use_siglip:
+
+            net1 = SigLIPMasker()
+            net2 = vision_models.resnet18(pretrained=pretrained)
+
+            if input_coord_conv:
+                net2.conv1 = CoordConv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            elif input_channel != 3:
+                net2.conv1 = nn.Conv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+            # cut the last fc layer
+            self._input_coord_conv = input_coord_conv
+            self._input_channel = input_channel
+            self.nets = torch.nn.Sequential(net1, *(list(net2.children())[:-2]))
+            self._has_mask_net = True
+
+        else:
+            net = vision_models.resnet18(pretrained=pretrained)
+            if input_coord_conv:
+                net.conv1 = CoordConv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            elif input_channel != 3:
+                net.conv1 = nn.Conv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            self._input_coord_conv = input_coord_conv
+            self._input_channel = input_channel
+            self.nets = nn.Sequential(*(list(net.children())[:-2]))
+            self._has_mask_net = False
+
+    def enable_sam3(self, device="cuda:1", **kwargs):
+        """Attach SAM3 masker. Defaults device to cuda:1 to avoid sharing VRAM
+        with the policy on cuda:0; pass device=... or other Sam3Masker kwargs
+        (text_prompt, threshold, etc.) to override."""
+        self.masker = sam3_mask(device=device, **kwargs)
+
+    def forward(self, x):
+        rgb = x
+        depth = None
+        if x.shape[1] == 4:
+            rgb = x[:, :3, :, :]
+            depth = x[:, 3:, :, :]
+
+        if self.masker is not None:
+            rgb = self.masker(rgb)       # ← SAM masking happens here
+            
+        if getattr(self, '_has_mask_net', False):
+            # nets[0] is the masker, nets[1:] is the backbone
+            rgb = self.nets[0](rgb)
+            if depth is not None:
+                x = torch.cat([rgb, depth], dim=1)
+            else:
+                x = rgb
+            for i in range(1, len(self.nets)):
+                x = self.nets[i](x)
+            return x
+        else:
+            if depth is not None:
+                x = torch.cat([rgb, depth], dim=1)
+            else:
+                x = rgb
+            return self.nets(x)
 
     def output_shape(self, input_shape):
         """
-        Function to compute output shape from inputs to this module. 
+        Function to compute output shape from inputs to this module.
 
         Args:
             input_shape (iterable of int): shape of input. Does not include batch dimension.
@@ -489,15 +553,22 @@ class ResNet18Conv(ConvBase):
         Returns:
             out_shape ([int]): list of integers corresponding to output shape
         """
-        assert(len(input_shape) == 3)
-        out_h = int(math.ceil(input_shape[1] / 32.))
-        out_w = int(math.ceil(input_shape[2] / 32.))
+        assert len(input_shape) == 3
+        assert input_shape[0] == self._input_channel
+        out_h = int(math.ceil(input_shape[1] / 32.0))
+        out_w = int(math.ceil(input_shape[2] / 32.0))
         return [512, out_h, out_w]
 
     def __repr__(self):
-        """Pretty print network."""
-        header = '{}'.format(str(self.__class__.__name__))
-        return header + '(input_channel={}, input_coord_conv={})'.format(self._input_channel, self._input_coord_conv)
+        header = str(self.__class__.__name__)
+        return header + (
+            "(input_channel={}, pretrained={}, input_coord_conv={}, masker={})"
+        ).format(
+            self._input_channel,
+            self._pretrained,
+            self._input_coord_conv,
+            self.masker is not None,
+        )
 
 
 class CoordConv2d(nn.Conv2d, Module):
@@ -910,6 +981,8 @@ class FeatureAggregator(Module):
             # weighted mean-pooling
             return torch.sum(x * self.agg_weight, dim=1)
         raise Exception("unexpected agg type: {}".forward(self.agg_type))
+
+        
 
 
 """
@@ -1381,3 +1454,4 @@ class CropRandomizer(Randomizer):
         msg = header + "(input_shape={}, crop_size=[{}, {}], num_crops={})".format(
             self.input_shape, self.crop_height, self.crop_width, self.num_crops)
         return msg
+        
