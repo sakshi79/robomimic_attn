@@ -21,6 +21,7 @@ setup(
         "psutil",
         "tqdm",
         "termcolor",
+        "six",
         "tensorboard",
         "tensorboardX",
         "imageio",

@@ -3,6 +3,7 @@ h5py
 psutil
 tqdm
 termcolor
+six
 tensorboard
 tensorboardX
 imageio
