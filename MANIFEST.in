@@ -1,4 +1,5 @@
 include robomimic/exps/templates/*.json
+recursive-include robomimic/models *.md *.jpg
 include robomimic/scripts/*.py
 include robomimic/scripts/*.sh
 include robomimic/scripts/conversion/*.py
