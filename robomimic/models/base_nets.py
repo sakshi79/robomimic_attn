@@ -1,7 +1,7 @@
 from .mask import SoftAttentionMask
 from .sam3 import Sam3Masker as sam3_mask
 from .siglip import SigLIPMasker
-
+from .unet import UNet
 """
 Contains torch Modules that correspond to basic network building blocks, like 
 MLP, RNN, and CNN backbones.
@@ -459,7 +459,8 @@ class ResNet18Conv(ConvBase):
         pretrained=False,
         input_coord_conv=False,
         use_sam3=False,          # ← new flag, default OFF
-        softmask=True,             # ← new flag, default OFF
+        softmask=False,             # ← new flag, default OFF
+        unetmask = True,
         use_siglip=False,           # ← new flag, default OFF
     ):
         super(ResNet18Conv, self).__init__()
@@ -468,6 +469,21 @@ class ResNet18Conv(ConvBase):
 
         if softmask:
             net1 = SoftAttentionMask()
+            net2 = vision_models.resnet18(pretrained=pretrained)
+
+            if input_coord_conv:
+                net2.conv1 = CoordConv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            elif input_channel != 3:
+                net2.conv1 = nn.Conv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+            # cut the last fc layer
+            self._input_coord_conv = input_coord_conv
+            self._input_channel = input_channel
+            self.nets = torch.nn.Sequential(net1, *(list(net2.children())[:-2]))
+            self._has_mask_net = True
+
+        elif unetmask:
+            net1 = UNet()
             net2 = vision_models.resnet18(pretrained=pretrained)
 
             if input_coord_conv:

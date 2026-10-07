@@ -100,7 +100,7 @@ class SoftAttentionMask(nn.Module):
         d3 = self.up3(b)
         e3_attn = self.attn3(query=d3, key=e3)
         e3_attn = match_spatial(e3_attn, d3)
-        
+
         d3 = self.dec3(torch.cat([d3, e3_attn], dim=1))
 
         # Level 2 attention and decode
@@ -116,5 +116,5 @@ class SoftAttentionMask(nn.Module):
         d1 = self.dec1(torch.cat([d1, e1_attn], dim=1))
 
         out = torch.sigmoid(self.out(d1))
-        out = match_spatial(out, x)
+        # out = self.out(d1)
         return out
